@@ -22,27 +22,36 @@ use anchor_lang::solana_program;
 use anchor_lang::solana_program::instruction::Instruction;
 use std::convert::Into;
 
-declare_id!("6tbPiQLgTU4ySYWyZGXbnVSAEzLc1uF8t5kJPXXgBmRP");
+declare_id!("87CMnS1XEzpePDoXa3HwexwacdUMKubdwbVrPF3djoQJ");
 
+// ***** Program Account ***** //
 #[program]
 pub mod serum_multisig {
     use super::*;
 
     // Initializes a new multisig account with a set of owners and a threshold.
+    // Owners: List of pubkeys that hold the contract participants
+    // Threshold: The threshold of owner votes that msut be reached for consensus
+    // Nonce: The PDA address of the Multisig account
+    // owner_set_seqno: The initialized value of the number of times the set of owners have changed
     pub fn create_multisig(
         ctx: Context<CreateMultisig>,
+        description: String,
         owners: Vec<Pubkey>,
         threshold: u64,
         nonce: u8,
     ) -> Result<()> {
         let multisig = &mut ctx.accounts.multisig;
+        multisig.description = description;
         multisig.owners = owners;
         multisig.threshold = threshold;
         multisig.nonce = nonce;
         multisig.owner_set_seqno = 0;
+        multisig.lamports = 0;
         Ok(())
     }
 
+    // TODO: Document
     // Creates a new transaction account, automatically signed by the creator,
     // which must be one of the owners of the multisig.
     pub fn create_transaction(
@@ -75,6 +84,7 @@ pub mod serum_multisig {
         Ok(())
     }
 
+    // TODO: Document
     // Approves a transaction on behalf of an owner of the multisig.
     pub fn approve(ctx: Context<Approve>) -> Result<()> {
         let owner_index = ctx
@@ -90,6 +100,7 @@ pub mod serum_multisig {
         Ok(())
     }
 
+    // TODO: Document
     // Set owners and threshold at once.
     pub fn set_owners_and_change_threshold<'info>(
         ctx: Context<'_, '_, '_, 'info, Auth<'info>>,
@@ -118,6 +129,18 @@ pub mod serum_multisig {
         Ok(())
     }
 
+    // Deposit lamports into the multisig account.
+    // Can only be done recursively through execute_transaction -> deposit_lamports
+    pub fn deposit_lamports(ctx:Context<Escrow>, lamports: u64 )-> Result<()>{
+        Ok(())
+    }
+
+    // Withdraw lamports to the owner parties.
+    // Can only be done recursively through execute_transaction -> withdraw_lamports
+    pub fn withdraw_lamports(ctx:Context<Escrow>)-> Result<()>{
+        Ok(())
+    }
+
     // Changes the execution threshold of the multisig. The only way this can be
     // invoked is via a recursive call from execute_transaction ->
     // change_threshold.
@@ -130,6 +153,7 @@ pub mod serum_multisig {
         Ok(())
     }
 
+    // TODO: Document
     // Executes the given transaction if threshold owners have signed it.
     pub fn execute_transaction(ctx: Context<ExecuteTransaction>) -> Result<()> {
         // Has this been executed already?
@@ -137,7 +161,7 @@ pub mod serum_multisig {
             return Err(ErrorCode::AlreadyExecuted.into());
         }
 
-        // Do we have enough signers.
+        // Get the count of valid signers on the pending transaction
         let sig_count = ctx
             .accounts
             .transaction
@@ -145,12 +169,17 @@ pub mod serum_multisig {
             .iter()
             .filter(|&did_sign| *did_sign)
             .count() as u64;
+
+        // Do we have enough signers on the transaction to execute?    
         if sig_count < ctx.accounts.multisig.threshold {
             return Err(ErrorCode::NotEnoughSigners.into());
         }
 
-        // Execute the transaction signed by the multisig.
+        // Turn the transaction account into a Instruction type
         let mut ix: Instruction = (&*ctx.accounts.transaction).into();
+
+        // Grab the metadata for what accounts should be passed to the instruction processor
+        // In this case we only want the multisig_signer Program Derived Address that we created with the programId and the multisig publicKey
         ix.accounts = ix
             .accounts
             .iter()
@@ -162,12 +191,20 @@ pub mod serum_multisig {
                 acc
             })
             .collect();
+
+        // Generate the seeds to find the multisig_signer Program Derived Address
         let seeds = &[
             ctx.accounts.multisig.to_account_info().key.as_ref(),
             &[ctx.accounts.multisig.nonce],
         ];
+
+        // The one signer needed to execute
         let signer = &[&seeds[..]];
+
+        // Grab all of the accounts that havent been touched
         let accounts = ctx.remaining_accounts;
+
+        // Invoke a cross-program instruction with program signatures
         solana_program::program::invoke_signed(&ix, accounts, signer)?;
 
         // Burn the transaction to ensure one time use.
@@ -177,6 +214,7 @@ pub mod serum_multisig {
     }
 }
 
+// ***** Contexts ***** //
 #[derive(Accounts)]
 pub struct CreateMultisig<'info> {
     #[account(zero)]
@@ -195,6 +233,7 @@ pub struct CreateTransaction<'info> {
     rent: Sysvar<'info, Rent>,
 }
 
+// TODO: Document
 #[derive(Accounts)]
 pub struct Approve<'info> {
     #[account(constraint = multisig.owner_set_seqno == transaction.owner_set_seqno)]
@@ -206,6 +245,19 @@ pub struct Approve<'info> {
     owner: AccountInfo<'info>,
 }
 
+// TODO: Document
+#[derive(Accounts)]
+pub struct Escrow<'info> {
+    #[account(constraint = multisig.owner_set_seqno == transaction.owner_set_seqno)]
+    multisig: ProgramAccount<'info, Multisig>,
+    #[account(mut, has_one = multisig)]
+    transaction: ProgramAccount<'info, Transaction>,
+    // One of the multisig owners. Checked in the handler.
+    #[account(signer)]
+    owner: AccountInfo<'info>,
+}
+
+// TODO: Document
 #[derive(Accounts)]
 pub struct Auth<'info> {
     #[account(mut)]
@@ -218,6 +270,7 @@ pub struct Auth<'info> {
     multisig_signer: AccountInfo<'info>,
 }
 
+// TODO: Document
 #[derive(Accounts)]
 pub struct ExecuteTransaction<'info> {
     #[account(constraint = multisig.owner_set_seqno == transaction.owner_set_seqno)]
@@ -231,14 +284,19 @@ pub struct ExecuteTransaction<'info> {
     transaction: ProgramAccount<'info, Transaction>,
 }
 
+// ***** Data Accounts ***** //
+// TODO: Document
 #[account]
 pub struct Multisig {
+    pub description: String,
     pub owners: Vec<Pubkey>,
     pub threshold: u64,
     pub nonce: u8,
     pub owner_set_seqno: u32,
+    pub lamports: u64,
 }
 
+// TODO: Document
 #[account]
 pub struct Transaction {
     // The multisig account this transaction belongs to.
@@ -257,6 +315,8 @@ pub struct Transaction {
     pub owner_set_seqno: u32,
 }
 
+// We implement the From trait for the Instruction type in order to turn a Transaction type into an Instruction type
+// We consume the Transaction type and convert it into an Instruction type
 impl From<&Transaction> for Instruction {
     fn from(tx: &Transaction) -> Instruction {
         Instruction {
@@ -267,6 +327,7 @@ impl From<&Transaction> for Instruction {
     }
 }
 
+// Accounts that are a aprt of the wrapped transactions that will execute once we have enough votes
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct TransactionAccount {
     pub pubkey: Pubkey,
@@ -274,6 +335,7 @@ pub struct TransactionAccount {
     pub is_writable: bool,
 }
 
+// We implement the From trait for the TransactionAccount type in order to convert it into an AccountMeta type
 impl From<&TransactionAccount> for AccountMeta {
     fn from(account: &TransactionAccount) -> AccountMeta {
         match account.is_writable {
@@ -283,6 +345,7 @@ impl From<&TransactionAccount> for AccountMeta {
     }
 }
 
+// We implement the From trait for the AccountMeta type in order to convert it into an TransactionAccount type
 impl From<&AccountMeta> for TransactionAccount {
     fn from(account_meta: &AccountMeta) -> TransactionAccount {
         TransactionAccount {
@@ -293,6 +356,7 @@ impl From<&AccountMeta> for TransactionAccount {
     }
 }
 
+// ***** Errors ***** //
 #[error]
 pub enum ErrorCode {
     #[msg("The given owner is not part of this multisig.")]
@@ -309,4 +373,5 @@ pub enum ErrorCode {
     AlreadyExecuted,
     #[msg("Threshold must be less than or equal to the number of owners.")]
     InvalidThreshold,
+    // TODO: add new errors for depositing and withdrawing lamports
 }
