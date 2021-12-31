@@ -165,7 +165,8 @@ describe("multisig", () => {
           multisig: multisig.publicKey,
           multisigSigner,
         })
-        // Change the signer status on the vendor signer since it's signed within the program, not the client.
+        // bc the accounts within the Auth context specified that multisig signer was a signer, we set its signer status to false bc we'll set the signer to
+        // execute within the program file
         .map((meta) =>
           meta.pubkey.equals(multisigSigner)
             ? { ...meta, isSigner: false }
